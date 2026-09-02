@@ -29,10 +29,29 @@ class Form(StatesGroup):
     direction = State()
     day = State()
 
-# Клавиатура для отмены
-cancel_kb = types.ReplyKeyboardMarkup(
+# Клавиатура для шага "Имя" (обычная отмена)
+name_cancel_kb = types.ReplyKeyboardMarkup(
     keyboard=[[types.KeyboardButton(text="/cancel")]],
     resize_keyboard=True
+)
+
+# Клавиатура для шага "Телефон" (кнопка контакта + отмена)
+phone_kb = types.ReplyKeyboardMarkup(
+    keyboard=[
+        [types.KeyboardButton(text="📱 Поделиться контактом", request_contact=True)],
+        [types.KeyboardButton(text="/cancel")]
+    ],
+    resize_keyboard=True
+)
+
+# Inline-клавиатура для выбора направления
+direction_kb = types.InlineKeyboardMarkup(
+    inline_keyboard=[
+        [types.InlineKeyboardButton(text="IT", callback_data="dir_it")],
+        [types.InlineKeyboardButton(text="Дизайн", callback_data="dir_design")],
+        [types.InlineKeyboardButton(text="Маркетинг", callback_data="dir_marketing")],
+        [types.InlineKeyboardButton(text="Другое", callback_data="dir_other")]
+    ]
 )
 
 # Команда /start
@@ -40,51 +59,92 @@ cancel_kb = types.ReplyKeyboardMarkup(
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.set_state(Form.name)
     await message.answer(
-        "Здравствуйте! Давайте заполним анкету.\n"
-        "Введите ваше имя:",
-        reply_markup=cancel_kb
+        "👋 Здравствуйте! Давайте заполним анкету.\n\n"
+        "Шаг 1 из 4: Введите ваше имя:",
+        reply_markup=name_cancel_kb
     )
 
-# Команда /cancel
+# Команда /cancel (работает на любом шаге)
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "Заполнение анкеты отменено. Нажмите /start, чтобы начать заново.",
+        "❌ Заполнение анкеты отменено.\n"
+        "Нажмите /start, чтобы начать заново.",
         reply_markup=types.ReplyKeyboardRemove()
     )
 
-# Обработка имени
+# Шаг 1: получение имени
 @dp.message(Form.name, F.text)
 async def process_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
+    await state.update_data(name=message.text.strip())
     await state.set_state(Form.phone)
-    await message.answer("Введите ваш номер телефона:")
+    await message.answer(
+        "📞 Шаг 2 из 4: Введите ваш номер телефона.\n\n"
+        "Вы можете нажать кнопку ниже, чтобы поделиться контактом, или ввести номер вручную.",
+        reply_markup=phone_kb
+    )
 
-# Обработка телефона
-@dp.message(Form.phone, F.text)
-async def process_phone(message: types.Message, state: FSMContext):
-    await state.update_data(phone=message.text)
+# Шаг 2: получение телефона через контакт
+@dp.message(Form.phone, F.contact)
+async def process_phone_contact(message: types.Message, state: FSMContext):
+    phone = message.contact.phone_number
+    await state.update_data(phone=phone)
     await state.set_state(Form.direction)
-    await message.answer("Введите направление работы (например, IT, Дизайн, Маркетинг):")
+    await message.answer(
+        "💼 Шаг 3 из 4: Выберите направление работы:",
+        reply_markup=direction_kb
+    )
 
-# Обработка направления
-@dp.message(Form.direction, F.text)
-async def process_direction(message: types.Message, state: FSMContext):
-    await state.update_data(direction=message.text)
+# Шаг 2: получение телефона вручную (текстом)
+@dp.message(Form.phone, F.text)
+async def process_phone_text(message: types.Message, state: FSMContext):
+    phone = message.text.strip()
+    await state.update_data(phone=phone)
+    await state.set_state(Form.direction)
+    await message.answer(
+        "💼 Шаг 3 из 4: Выберите направление работы:",
+        reply_markup=direction_kb
+    )
+
+# Шаг 3: обработка выбора направления (Inline-кнопки)
+@dp.callback_query(Form.direction)
+async def process_direction_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    direction_map = {
+        "dir_it": "IT",
+        "dir_design": "Дизайн",
+        "dir_marketing": "Маркетинг",
+        "dir_other": "Другое"
+    }
+    selected = direction_map.get(callback.data, "Другое")
+    await state.update_data(direction=selected)
     await state.set_state(Form.day)
-    await message.answer("Введите удобный день недели:")
 
-# Обработка дня недели и завершение
+    # Редактируем сообщение: убираем кнопки и просим ввести день
+    await callback.message.edit_text(
+        f"✅ Вы выбрали направление: <b>{selected}</b>\n\n"
+        "📅 Шаг 4 из 4: Введите доступный день недели:",
+        parse_mode="HTML",
+        reply_markup=None
+    )
+
+# Шаг 4: получение дня недели и завершение
 @dp.message(Form.day, F.text)
 async def process_day(message: types.Message, state: FSMContext):
-    await state.update_data(day=message.text)
+    await state.update_data(day=message.text.strip())
     data = await state.get_data()
     await state.clear()
 
-    # Формирование текста анкеты
-    user_info = (
-        f"📋 <b>Новая анкета</b>\n\n"
+    # Короткое сообщение соискателю
+    await message.answer(
+        "✅ Спасибо! Ваша анкета отправлена.",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    # Формирование красивой анкеты для администратора
+    admin_text = (
+        "📋 <b>Новая анкета</b>\n\n"
         f"👤 <b>Имя:</b> {data['name']}\n"
         f"📞 <b>Телефон:</b> {data['phone']}\n"
         f"💼 <b>Направление:</b> {data['direction']}\n"
@@ -92,18 +152,11 @@ async def process_day(message: types.Message, state: FSMContext):
         f"🆔 <b>User ID:</b> <code>{message.from_user.id}</code>"
     )
 
-    # Отправка пользователю
-    await message.answer(
-        "✅ Спасибо! Ваша анкета отправлена. Мы свяжемся с вами.",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-    await message.answer(user_info, parse_mode="HTML")
-
     # Отправка администратору
     try:
         await bot.send_message(
             ADMIN_ID,
-            user_info,
+            admin_text,
             parse_mode="HTML"
         )
     except Exception as e:
